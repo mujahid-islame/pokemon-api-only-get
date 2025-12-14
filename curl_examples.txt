@@ -1,0 +1,70 @@
+# Pokémon API cURL Examples
+
+# 1. GET all Pokémon
+curl http://localhost:8080/api/pokemons
+
+# 2. GET with pagination
+curl "http://localhost:8080/api/pokemons?page=2&limit=5"
+
+# 3. GET by ID
+curl http://localhost:8080/api/pokemons/1
+
+# 4. CREATE new Pokémon
+curl -X POST http://localhost:8080/api/pokemons \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Raichu",
+    "num": "026",
+    "type": ["Electric"],
+    "height": "0.79 m",
+    "weight": "30.0 kg",
+    "candy": "Pikachu Candy",
+    "egg": "Not in Eggs",
+    "spawn_chance": 0.0076,
+    "avg_spawns": 0.76,
+    "spawn_time": "23:58",
+    "weaknesses": ["Ground"]
+  }'
+
+# 5. UPDATE Pokémon (full)
+curl -X PUT http://localhost:8080/api/pokemons/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Bulbasaur Updated",
+    "num": "001",
+    "type": ["Grass", "Poison"],
+    "height": "0.75 m",
+    "weight": "7.5 kg",
+    "candy": "Bulbasaur Candy",
+    "candy_count": 25,
+    "egg": "2 km",
+    "spawn_chance": 0.7,
+    "avg_spawns": 70,
+    "spawn_time": "20:00",
+    "weaknesses": ["Fire", "Ice", "Flying", "Psychic"]
+  }'
+
+# 6. UPDATE Pokémon (partial)
+curl -X PATCH http://localhost:8080/api/pokemons/1 \
+  -H "Content-Type: application/json" \
+  -d '{"spawn_chance": 0.8, "height": "0.80 m"}'
+
+# 7. DELETE Pokémon
+curl -X DELETE http://localhost:8080/api/pokemons/1
+
+# 8. BULK CREATE
+curl -X POST http://localhost:8080/api/pokemons/bulk \
+  -H "Content-Type: application/json" \
+  -d '[{...pokemon1...}, {...pokemon2...}]'
+
+# 9. GET by type
+curl http://localhost:8080/api/pokemons/type/Fire
+
+# 10. SEARCH
+curl http://localhost:8080/api/pokemons/search/pika
+
+# 11. GET statistics
+curl http://localhost:8080/api/stats
+
+# 12. DELETE ALL (with confirmation)
+curl -X DELETE "http://localhost:8080/api/pokemons?confirm=true"

@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Pokémon স্ট্রাকচার
@@ -20,7 +22,7 @@ type Pokemon struct {
 	Height        string      `json:"height"`
 	Weight        string      `json:"weight"`
 	Candy         string      `json:"candy"`
-	CandyCount    int         `json:"candy_count,omitempty"`
+	CandyCount    *int        `json:"candy_count,omitempty"`
 	Egg           string      `json:"egg"`
 	SpawnChance   float64     `json:"spawn_chance"`
 	AvgSpawns     float64     `json:"avg_spawns"`
@@ -29,6 +31,8 @@ type Pokemon struct {
 	Weaknesses    []string    `json:"weaknesses"`
 	NextEvolution []Evolution `json:"next_evolution,omitempty"`
 	PrevEvolution []Evolution `json:"prev_evolution,omitempty"`
+	CreatedAt     time.Time   `json:"created_at,omitempty"`
+	UpdatedAt     time.Time   `json:"updated_at,omitempty"`
 }
 
 type Evolution struct {
@@ -36,84 +40,189 @@ type Evolution struct {
 	Name string `json:"name"`
 }
 
-// ইন-মেমরি ডাটা স্টোর
-var pokemons []Pokemon
-
-func init() {
-	// আপনার JSON ডেটা এখানে লোড করুন
-	// আমি উদাহরণ হিসেবে কিছু ডেটা দিচ্ছি
-	pokemons = []Pokemon{
-		{
-			ID:          1,
-			Num:         "001",
-			Name:        "Bulbasaur",
-			Img:         "http://www.serebii.net/pokemongo/pokemon/001.png",
-			Type:        []string{"Grass", "Poison"},
-			Height:      "0.71 m",
-			Weight:      "6.9 kg",
-			Candy:       "Bulbasaur Candy",
-			CandyCount:  25,
-			Egg:         "2 km",
-			SpawnChance: 0.69,
-			AvgSpawns:   69,
-			SpawnTime:   "20:00",
-			Multipliers: []float64{1.58},
-			Weaknesses:  []string{"Fire", "Ice", "Flying", "Psychic"},
-			NextEvolution: []Evolution{
-				{Num: "002", Name: "Ivysaur"},
-				{Num: "003", Name: "Venusaur"},
-			},
-		},
-		{
-			ID:          2,
-			Num:         "002",
-			Name:        "Ivysaur",
-			Img:         "http://www.serebii.net/pokemongo/pokemon/002.png",
-			Type:        []string{"Grass", "Poison"},
-			Height:      "0.99 m",
-			Weight:      "13.0 kg",
-			Candy:       "Bulbasaur Candy",
-			CandyCount:  100,
-			Egg:         "Not in Eggs",
-			SpawnChance: 0.042,
-			AvgSpawns:   4.2,
-			SpawnTime:   "07:00",
-			Multipliers: []float64{1.2, 1.6},
-			Weaknesses:  []string{"Fire", "Ice", "Flying", "Psychic"},
-			PrevEvolution: []Evolution{
-				{Num: "001", Name: "Bulbasaur"},
-			},
-			NextEvolution: []Evolution{
-				{Num: "003", Name: "Venusaur"},
-			},
-		},
-		// আপনার সমস্ত ডেটা এখানে যোগ করুন
-	}
-
-	// ফাইলে থেকে ডেটা লোড করার জন্য (যদি চান)
-	// loadFromJSON("pokemon.json")
+// ইন-মেমরি ডাটাবেস
+type PokemonDB struct {
+	sync.RWMutex
+	pokemons  []Pokemon
+	idCounter int
 }
 
-// JSON থেকে ডেটা লোড করার ফাংশন
+var db *PokemonDB
+
+func init() {
+	db = &PokemonDB{
+		pokemons:  make([]Pokemon, 0),
+		idCounter: 1,
+	}
+	loadInitialData()
+}
+
+// প্রারম্ভিক ডেটা লোড
+func loadInitialData() {
+	// JSON ফাইল থেকে ডেটা লোড করার চেষ্টা করুন
+	if err := loadFromJSON("pokemon.json"); err == nil {
+		log.Println("Data loaded from pokemon.json")
+		return
+	}
+
+	// স্যাম্পল ডেটা লোড
+	log.Println("Using sample data")
+	sampleData := getSampleData()
+
+	db.Lock()
+	defer db.Unlock()
+
+	for i := range sampleData {
+		sampleData[i].ID = db.idCounter
+		db.idCounter++
+		sampleData[i].CreatedAt = time.Now()
+		sampleData[i].UpdatedAt = time.Now()
+		db.pokemons = append(db.pokemons, sampleData[i])
+	}
+
+	log.Printf("Loaded %d Pokémon\n", len(db.pokemons))
+}
+
+// JSON ফাইল থেকে লোড
 func loadFromJSON(filename string) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return err
 	}
 
-	err = json.Unmarshal(data, &pokemons)
-	if err != nil {
+	var pokemons []Pokemon
+	if err := json.Unmarshal(data, &pokemons); err != nil {
 		return err
+	}
+
+	db.Lock()
+	defer db.Unlock()
+
+	for i := range pokemons {
+		pokemons[i].ID = db.idCounter
+		db.idCounter++
+		pokemons[i].CreatedAt = time.Now()
+		pokemons[i].UpdatedAt = time.Now()
+		db.pokemons = append(db.pokemons, pokemons[i])
 	}
 
 	return nil
 }
 
+// JSON ফাইলে সেভ
+func saveToJSON(filename string) error {
+	db.RLock()
+	defer db.RUnlock()
+
+	data, err := json.MarshalIndent(db.pokemons, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filename, data, 0644)
+}
+
+// স্যাম্পল ডেটা
+func getSampleData() []Pokemon {
+	return []Pokemon{
+		{
+			Num:           "001",
+			Name:          "Bulbasaur",
+			Img:           "http://www.serebii.net/pokemongo/pokemon/001.png",
+			Type:          []string{"Grass", "Poison"},
+			Height:        "0.71 m",
+			Weight:        "6.9 kg",
+			Candy:         "Bulbasaur Candy",
+			CandyCount:    intPtr(25),
+			Egg:           "2 km",
+			SpawnChance:   0.69,
+			AvgSpawns:     69,
+			SpawnTime:     "20:00",
+			Multipliers:   []float64{1.58},
+			Weaknesses:    []string{"Fire", "Ice", "Flying", "Psychic"},
+			NextEvolution: []Evolution{{Num: "002", Name: "Ivysaur"}, {Num: "003", Name: "Venusaur"}},
+		},
+		{
+			Num:           "002",
+			Name:          "Ivysaur",
+			Img:           "http://www.serebii.net/pokemongo/pokemon/002.png",
+			Type:          []string{"Grass", "Poison"},
+			Height:        "0.99 m",
+			Weight:        "13.0 kg",
+			Candy:         "Bulbasaur Candy",
+			CandyCount:    intPtr(100),
+			Egg:           "Not in Eggs",
+			SpawnChance:   0.042,
+			AvgSpawns:     4.2,
+			SpawnTime:     "07:00",
+			Multipliers:   []float64{1.2, 1.6},
+			Weaknesses:    []string{"Fire", "Ice", "Flying", "Psychic"},
+			PrevEvolution: []Evolution{{Num: "001", Name: "Bulbasaur"}},
+			NextEvolution: []Evolution{{Num: "003", Name: "Venusaur"}},
+		},
+		{
+			Num:           "003",
+			Name:          "Venusaur",
+			Img:           "http://www.serebii.net/pokemongo/pokemon/003.png",
+			Type:          []string{"Grass", "Poison"},
+			Height:        "2.01 m",
+			Weight:        "100.0 kg",
+			Candy:         "Bulbasaur Candy",
+			Egg:           "Not in Eggs",
+			SpawnChance:   0.017,
+			AvgSpawns:     1.7,
+			SpawnTime:     "11:30",
+			Weaknesses:    []string{"Fire", "Ice", "Flying", "Psychic"},
+			PrevEvolution: []Evolution{{Num: "001", Name: "Bulbasaur"}, {Num: "002", Name: "Ivysaur"}},
+		},
+		{
+			Num:           "004",
+			Name:          "Charmander",
+			Img:           "http://www.serebii.net/pokemongo/pokemon/004.png",
+			Type:          []string{"Fire"},
+			Height:        "0.61 m",
+			Weight:        "8.5 kg",
+			Candy:         "Charmander Candy",
+			CandyCount:    intPtr(25),
+			Egg:           "2 km",
+			SpawnChance:   0.253,
+			AvgSpawns:     25.3,
+			SpawnTime:     "08:45",
+			Multipliers:   []float64{1.65},
+			Weaknesses:    []string{"Water", "Ground", "Rock"},
+			NextEvolution: []Evolution{{Num: "005", Name: "Charmeleon"}, {Num: "006", Name: "Charizard"}},
+		},
+		{
+			Num:           "005",
+			Name:          "Charmeleon",
+			Img:           "http://www.serebii.net/pokemongo/pokemon/005.png",
+			Type:          []string{"Fire"},
+			Height:        "1.09 m",
+			Weight:        "19.0 kg",
+			Candy:         "Charmander Candy",
+			CandyCount:    intPtr(100),
+			Egg:           "Not in Eggs",
+			SpawnChance:   0.012,
+			AvgSpawns:     1.2,
+			SpawnTime:     "19:00",
+			Multipliers:   []float64{1.79},
+			Weaknesses:    []string{"Water", "Ground", "Rock"},
+			PrevEvolution: []Evolution{{Num: "004", Name: "Charmander"}},
+			NextEvolution: []Evolution{{Num: "006", Name: "Charizard"}},
+		},
+	}
+}
+
+// Helper functions
+func intPtr(i int) *int {
+	return &i
+}
+
 // CORS মিডলওয়্যার
-func enableCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func enableCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == "OPTIONS" {
@@ -121,13 +230,78 @@ func enableCORS(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		next(w, r)
+	}
+}
+
+// JSON রেসপন্স হেল্পার
+func respondJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
+}
+
+func respondError(w http.ResponseWriter, status int, message string) {
+	respondJSON(w, status, map[string]string{"error": message})
+}
+
+// ==================== CRUD OPERATIONS ====================
+
+// 1. CREATE - POST /api/pokemons
+func createPokemon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var pokemon Pokemon
+	if err := json.NewDecoder(r.Body).Decode(&pokemon); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Validation
+	if pokemon.Name == "" {
+		respondError(w, http.StatusBadRequest, "Name is required")
+		return
+	}
+
+	db.Lock()
+	defer db.Unlock()
+
+	// Check if Pokémon number already exists
+	for _, p := range db.pokemons {
+		if p.Num == pokemon.Num {
+			respondError(w, http.StatusConflict, "Pokemon with this number already exists")
+			return
+		}
+	}
+
+	// Set ID and timestamps
+	pokemon.ID = db.idCounter
+	db.idCounter++
+	pokemon.CreatedAt = time.Now()
+	pokemon.UpdatedAt = time.Now()
+
+	db.pokemons = append(db.pokemons, pokemon)
+
+	// Save to file
+	if err := saveToJSON("pokemon_backup.json"); err != nil {
+		log.Printf("Warning: Could not save backup: %v", err)
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]interface{}{
+		"message": "Pokemon created successfully",
+		"pokemon": pokemon,
 	})
 }
 
-// 1. GET all Pokémon
+// 2. READ ALL - GET /api/pokemons
 func getAllPokemons(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
 
 	// Query parameters
 	query := r.URL.Query()
@@ -136,8 +310,12 @@ func getAllPokemons(w http.ResponseWriter, r *http.Request) {
 	pageStr := query.Get("page")
 	limitStr := query.Get("limit")
 
+	db.RLock()
+	defer db.RUnlock()
+
 	// Filtering
-	filteredPokemons := pokemons
+	filteredPokemons := make([]Pokemon, len(db.pokemons))
+	copy(filteredPokemons, db.pokemons)
 
 	if typeFilter != "" {
 		var result []Pokemon
@@ -197,260 +375,567 @@ func getAllPokemons(w http.ResponseWriter, r *http.Request) {
 		"data":        filteredPokemons[start:end],
 	}
 
-	json.NewEncoder(w).Encode(response)
+	respondJSON(w, http.StatusOK, response)
 }
 
-// 2. GET Pokémon by ID
+// 3. READ ONE - GET /api/pokemons/{id}
 func getPokemonByID(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	idStr := strings.TrimPrefix(r.URL.Path, "/api/pokemons/")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		http.Error(w, `{"error": "Invalid ID"}`, http.StatusBadRequest)
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	for _, pokemon := range pokemons {
+	path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/")
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+
+	db.RLock()
+	defer db.RUnlock()
+
+	for _, pokemon := range db.pokemons {
 		if pokemon.ID == id {
-			json.NewEncoder(w).Encode(pokemon)
+			respondJSON(w, http.StatusOK, pokemon)
 			return
 		}
 	}
 
-	http.Error(w, `{"error": "Pokemon not found"}`, http.StatusNotFound)
+	respondError(w, http.StatusNotFound, "Pokemon not found")
 }
 
-// 3. GET Pokémon by type
-func getPokemonsByType(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	pathParts := strings.Split(r.URL.Path, "/")
-	if len(pathParts) < 4 {
-		http.Error(w, `{"error": "Type parameter required"}`, http.StatusBadRequest)
+// 4. UPDATE - PUT /api/pokemons/{id}
+func updatePokemon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	pokemonType := pathParts[3]
-	var result []Pokemon
-
-	for _, pokemon := range pokemons {
-		for _, t := range pokemon.Type {
-			if strings.EqualFold(t, pokemonType) {
-				result = append(result, pokemon)
-				break
-			}
-		}
-	}
-
-	json.NewEncoder(w).Encode(result)
-}
-
-// 4. GET weak against
-func getPokemonsWeakAgainst(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	pathParts := strings.Split(r.URL.Path, "/")
-	if len(pathParts) < 4 {
-		http.Error(w, `{"error": "Weakness parameter required"}`, http.StatusBadRequest)
+	path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/")
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid ID")
 		return
 	}
 
-	weakness := pathParts[3]
-	var result []Pokemon
-
-	for _, pokemon := range pokemons {
-		for _, w := range pokemon.Weaknesses {
-			if strings.EqualFold(w, weakness) {
-				result = append(result, pokemon)
-				break
-			}
-		}
-	}
-
-	json.NewEncoder(w).Encode(result)
-}
-
-// 5. GET by candy type
-func getPokemonsByCandy(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	pathParts := strings.Split(r.URL.Path, "/")
-	if len(pathParts) < 4 {
-		http.Error(w, `{"error": "Candy parameter required"}`, http.StatusBadRequest)
+	var updatedPokemon Pokemon
+	if err := json.NewDecoder(r.Body).Decode(&updatedPokemon); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	candyType := pathParts[3]
-	var result []Pokemon
+	db.Lock()
+	defer db.Unlock()
 
-	for _, pokemon := range pokemons {
-		if strings.Contains(strings.ToLower(pokemon.Candy), strings.ToLower(candyType)) {
-			result = append(result, pokemon)
-		}
-	}
+	for i, pokemon := range db.pokemons {
+		if pokemon.ID == id {
+			// Keep original ID and creation timestamp
+			updatedPokemon.ID = pokemon.ID
+			updatedPokemon.CreatedAt = pokemon.CreatedAt
+			updatedPokemon.UpdatedAt = time.Now()
 
-	json.NewEncoder(w).Encode(result)
-}
+			db.pokemons[i] = updatedPokemon
 
-// 6. GET by egg distance
-func getPokemonsByEgg(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	pathParts := strings.Split(r.URL.Path, "/")
-	if len(pathParts) < 4 {
-		http.Error(w, `{"error": "Egg parameter required"}`, http.StatusBadRequest)
-		return
-	}
-
-	eggDistance := pathParts[3]
-	var result []Pokemon
-
-	for _, pokemon := range pokemons {
-		if pokemon.Egg == eggDistance {
-			result = append(result, pokemon)
-		}
-	}
-
-	json.NewEncoder(w).Encode(result)
-}
-
-// 7. GET spawn chance filter
-func getPokemonsBySpawnChance(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	query := r.URL.Query()
-	minStr := query.Get("min")
-	maxStr := query.Get("max")
-
-	var min, max float64 = 0, 100
-
-	if minStr != "" {
-		if m, err := strconv.ParseFloat(minStr, 64); err == nil {
-			min = m
-		}
-	}
-
-	if maxStr != "" {
-		if m, err := strconv.ParseFloat(maxStr, 64); err == nil {
-			max = m
-		}
-	}
-
-	var result []Pokemon
-	for _, pokemon := range pokemons {
-		if pokemon.SpawnChance >= min && pokemon.SpawnChance <= max {
-			result = append(result, pokemon)
-		}
-	}
-
-	// Sort by spawn chance (descending)
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].SpawnChance > result[j].SpawnChance
-	})
-
-	json.NewEncoder(w).Encode(result)
-}
-
-// 8. GET by height/weight range
-func getPokemonsBySize(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	query := r.URL.Query()
-	heightMin := query.Get("height_min")
-	heightMax := query.Get("height_max")
-	weightMin := query.Get("weight_min")
-	weightMax := query.Get("weight_max")
-
-	var result []Pokemon
-
-	for _, pokemon := range pokemons {
-		height, _ := strconv.ParseFloat(strings.Split(pokemon.Height, " ")[0], 64)
-		weight, _ := strconv.ParseFloat(strings.Split(pokemon.Weight, " ")[0], 64)
-
-		heightMatch := true
-		weightMatch := true
-
-		if heightMin != "" {
-			if hmin, err := strconv.ParseFloat(heightMin, 64); err == nil {
-				heightMatch = heightMatch && (height >= hmin)
+			// Save backup
+			if err := saveToJSON("pokemon_backup.json"); err != nil {
+				log.Printf("Warning: Could not save backup: %v", err)
 			}
-		}
 
-		if heightMax != "" {
-			if hmax, err := strconv.ParseFloat(heightMax, 64); err == nil {
-				heightMatch = heightMatch && (height <= hmax)
-			}
-		}
-
-		if weightMin != "" {
-			if wmin, err := strconv.ParseFloat(weightMin, 64); err == nil {
-				weightMatch = weightMatch && (weight >= wmin)
-			}
-		}
-
-		if weightMax != "" {
-			if wmax, err := strconv.ParseFloat(weightMax, 64); err == nil {
-				weightMatch = weightMatch && (weight <= wmax)
-			}
-		}
-
-		if heightMatch && weightMatch {
-			result = append(result, pokemon)
-		}
-	}
-
-	json.NewEncoder(w).Encode(result)
-}
-
-// রাউট সেটআপ
-func setupRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/pokemons", getAllPokemons)
-	mux.HandleFunc("/api/pokemons/type/", getPokemonsByType)
-	mux.HandleFunc("/api/pokemons/weakness/", getPokemonsWeakAgainst)
-	mux.HandleFunc("/api/pokemons/candy/", getPokemonsByCandy)
-	mux.HandleFunc("/api/pokemons/egg/", getPokemonsByEgg)
-	mux.HandleFunc("/api/pokemons/spawn", getPokemonsBySpawnChance)
-	mux.HandleFunc("/api/pokemons/size", getPokemonsBySize)
-	mux.HandleFunc("/api/pokemons/", getPokemonByID) // Last because it catches /api/pokemons/{id}
-}
-
-func main() {
-	mux := http.NewServeMux()
-
-	// স্ট্যাটিক ফাইল সার্ভ (যদি ফ্রন্টএন্ড থাকে)
-	// mux.Handle("/", http.FileServer(http.Dir("./static")))
-
-	// API রাউটস
-	setupRoutes(mux)
-
-	// CORS সহ সার্ভার
-	handler := enableCORS(mux)
-
-	// স্বাগত বার্তা রুট
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"message":   "Pokémon API is running!",
-				"version":   "1.0.0",
-				"endpoints": "Available at /api/pokemons",
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"message": "Pokemon updated successfully",
+				"pokemon": updatedPokemon,
 			})
+			return
 		}
-	})
-
-	log.Println("Server starting on port 8080...")
-	log.Println("Available endpoints:")
-	log.Println("  GET /api/pokemons - Get all Pokémon with pagination")
-	log.Println("  GET /api/pokemons/{id} - Get Pokémon by ID")
-	log.Println("  GET /api/pokemons/type/{type} - Get Pokémon by type")
-	log.Println("  GET /api/pokemons/weakness/{type} - Get Pokémon weak against")
-	log.Println("  GET /api/pokemons/candy/{name} - Get Pokémon by candy")
-	log.Println("  GET /api/pokemons/egg/{distance} - Get Pokémon by egg distance")
-	log.Println("  GET /api/pokemons/spawn?min=0.1&max=1.0 - Filter by spawn chance")
-	log.Println("  GET /api/pokemons/size?height_min=0.5&height_max=2.0 - Filter by size")
-
-	if err := http.ListenAndServe(":8080", handler); err != nil {
-		log.Fatal(err)
 	}
+
+	respondError(w, http.StatusNotFound, "Pokemon not found")
+}
+
+// 5. PARTIAL UPDATE - PATCH /api/pokemons/{id}
+func patchPokemon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/")
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+
+	var updates map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	db.Lock()
+	defer db.Unlock()
+
+	for i, pokemon := range db.pokemons {
+		if pokemon.ID == id {
+			// Convert to JSON and back to apply updates
+			pokemonJSON, _ := json.Marshal(pokemon)
+			var pokemonMap map[string]interface{}
+			json.Unmarshal(pokemonJSON, &pokemonMap)
+
+			// Apply updates
+			for key, value := range updates {
+				if key != "id" && key != "created_at" && key != "updated_at" {
+					pokemonMap[key] = value
+				}
+			}
+
+			// Convert back to Pokemon struct
+			updatedJSON, _ := json.Marshal(pokemonMap)
+			var updatedPokemon Pokemon
+			json.Unmarshal(updatedJSON, &updatedPokemon)
+
+			// Restore original ID and timestamps
+			updatedPokemon.ID = pokemon.ID
+			updatedPokemon.CreatedAt = pokemon.CreatedAt
+			updatedPokemon.UpdatedAt = time.Now()
+
+			db.pokemons[i] = updatedPokemon
+
+			// Save backup
+			if err := saveToJSON("pokemon_backup.json"); err != nil {
+				log.Printf("Warning: Could not save backup: %v", err)
+			}
+
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"message": "Pokemon updated successfully",
+				"pokemon": updatedPokemon,
+			})
+			return
+		}
+	}
+
+	respondError(w, http.StatusNotFound, "Pokemon not found")
+}
+
+// 6. DELETE - DELETE /api/pokemons/{id}
+func deletePokemon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/")
+	id, err := strconv.Atoi(path)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+
+	db.Lock()
+	defer db.Unlock()
+
+	for i, pokemon := range db.pokemons {
+		if pokemon.ID == id {
+			// Remove the element
+			db.pokemons = append(db.pokemons[:i], db.pokemons[i+1:]...)
+
+			// Save backup
+			if err := saveToJSON("pokemon_backup.json"); err != nil {
+				log.Printf("Warning: Could not save backup: %v", err)
+			}
+
+			respondJSON(w, http.StatusOK, map[string]string{
+				"message": "Pokemon deleted successfully",
+				"id":      fmt.Sprintf("%d", id),
+			})
+			return
+		}
+	}
+
+	respondError(w, http.StatusNotFound, "Pokemon not found")
+}
+
+// 7. BULK CREATE - POST /api/pokemons/bulk
+func bulkCreatePokemons(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var newPokemons []Pokemon
+	if err := json.NewDecoder(r.Body).Decode(&newPokemons); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	db.Lock()
+	defer db.Unlock()
+
+	var created []Pokemon
+	var errors []string
+
+	for _, pokemon := range newPokemons {
+		if pokemon.Name == "" {
+			errors = append(errors, "Pokemon name cannot be empty")
+			continue
+		}
+
+		// Check if Pokémon number already exists
+		exists := false
+		for _, p := range db.pokemons {
+			if p.Num == pokemon.Num {
+				errors = append(errors, fmt.Sprintf("Pokemon with number %s already exists", pokemon.Num))
+				exists = true
+				break
+			}
+		}
+		if exists {
+			continue
+		}
+
+		// Set ID and timestamps
+		pokemon.ID = db.idCounter
+		db.idCounter++
+		pokemon.CreatedAt = time.Now()
+		pokemon.UpdatedAt = time.Now()
+
+		db.pokemons = append(db.pokemons, pokemon)
+		created = append(created, pokemon)
+	}
+
+	// Save backup
+	if err := saveToJSON("pokemon_backup.json"); err != nil {
+		log.Printf("Warning: Could not save backup: %v", err)
+	}
+
+	response := map[string]interface{}{
+		"message":          "Bulk create completed",
+		"created_count":    len(created),
+		"failed_count":     len(errors),
+		"created_pokemons": created,
+		"errors":           errors,
+	}
+
+	status := http.StatusCreated
+	if len(errors) > 0 {
+		status = http.StatusPartialContent
+	}
+
+	respondJSON(w, status, response)
+}
+
+// 8. DELETE ALL - DELETE /api/pokemons
+func deleteAllPokemons(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	query := r.URL.Query()
+	confirm := query.Get("confirm")
+
+	if confirm != "true" {
+		respondError(w, http.StatusBadRequest, "Add ?confirm=true to confirm deletion")
+		return
+	}
+
+	db.Lock()
+	defer db.Unlock()
+
+	count := len(db.pokemons)
+	db.pokemons = make([]Pokemon, 0)
+	db.idCounter = 1
+
+	// Save empty backup
+	if err := saveToJSON("pokemon_backup.json"); err != nil {
+		log.Printf("Warning: Could not save backup: %v", err)
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"message":       "All Pokemon deleted successfully",
+		"deleted_count": count,
+	})
+}
+
+// 9. SPECIAL ENDPOINTS
+func getPokemonsByType(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/type/")
+	if path == "" {
+		respondError(w, http.StatusBadRequest, "Type parameter required")
+		return
+	}
+
+	db.RLock()
+	defer db.RUnlock()
+
+	var result []Pokemon
+	for _, pokemon := range db.pokemons {
+		for _, t := range pokemon.Type {
+			if strings.EqualFold(t, path) {
+				result = append(result, pokemon)
+				break
+			}
+		}
+	}
+
+	respondJSON(w, http.StatusOK, result)
+}
+
+func getPokemonsWeakAgainst(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/weakness/")
+	if path == "" {
+		respondError(w, http.StatusBadRequest, "Weakness parameter required")
+		return
+	}
+
+	db.RLock()
+	defer db.RUnlock()
+
+	var result []Pokemon
+	for _, pokemon := range db.pokemons {
+		for _, w := range pokemon.Weaknesses {
+			if strings.EqualFold(w, path) {
+				result = append(result, pokemon)
+				break
+			}
+		}
+	}
+
+	respondJSON(w, http.StatusOK, result)
+}
+
+// 10. STATISTICS - GET /api/stats
+func getStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	db.RLock()
+	defer db.RUnlock()
+
+	// Calculate statistics
+	typeStats := make(map[string]int)
+	totalSpawnChance := 0.0
+	highestSpawn := db.pokemons[0]
+	lowestSpawn := db.pokemons[0]
+
+	for _, pokemon := range db.pokemons {
+		// Type statistics
+		for _, t := range pokemon.Type {
+			typeStats[t]++
+		}
+
+		// Spawn statistics
+		totalSpawnChance += pokemon.SpawnChance
+		if pokemon.SpawnChance > highestSpawn.SpawnChance {
+			highestSpawn = pokemon
+		}
+		if pokemon.SpawnChance < lowestSpawn.SpawnChance {
+			lowestSpawn = pokemon
+		}
+	}
+
+	avgSpawnChance := totalSpawnChance / float64(len(db.pokemons))
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"total_pokemons":   len(db.pokemons),
+		"by_type":          typeStats,
+		"avg_spawn_chance": avgSpawnChance,
+		"highest_spawn":    highestSpawn,
+		"lowest_spawn":     lowestSpawn,
+		"last_updated":     time.Now().Format(time.RFC3339),
+	})
+}
+
+// 11. SEARCH - GET /api/pokemons/search/{query}
+func searchPokemons(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/search/")
+	if path == "" {
+		respondError(w, http.StatusBadRequest, "Search query required")
+		return
+	}
+
+	db.RLock()
+	defer db.RUnlock()
+
+	var result []Pokemon
+	query := strings.ToLower(path)
+
+	for _, pokemon := range db.pokemons {
+		if strings.Contains(strings.ToLower(pokemon.Name), query) ||
+			strings.Contains(pokemon.Num, query) ||
+			strings.Contains(strings.ToLower(pokemon.Candy), query) {
+			result = append(result, pokemon)
+		}
+	}
+
+	respondJSON(w, http.StatusOK, result)
+}
+
+// 12. HOME HANDLER
+func homeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	response := map[string]interface{}{
+		"message": "Pokémon REST API with Full CRUD Operations",
+		"version": "2.0.0",
+		"endpoints": map[string]string{
+			"GET    /":          "API Documentation",
+			"GET    /api/stats": "Get Pokémon statistics",
+
+			// CRUD Operations
+			"GET    /api/pokemons":      "Get all Pokémon (with pagination)",
+			"POST   /api/pokemons":      "Create new Pokémon",
+			"GET    /api/pokemons/{id}": "Get Pokémon by ID",
+			"PUT    /api/pokemons/{id}": "Update Pokémon (full)",
+			"PATCH  /api/pokemons/{id}": "Update Pokémon (partial)",
+			"DELETE /api/pokemons/{id}": "Delete Pokémon by ID",
+
+			// Bulk Operations
+			"POST   /api/pokemons/bulk":         "Bulk create Pokémon",
+			"DELETE /api/pokemons?confirm=true": "Delete all Pokémon",
+
+			// Special Queries
+			"GET    /api/pokemons/type/{type}":     "Get Pokémon by type",
+			"GET    /api/pokemons/weakness/{type}": "Get Pokémon weak against",
+			"GET    /api/pokemons/search/{query}":  "Search Pokémon",
+
+			// Query Parameters
+			"?type=Fire":       "Filter by type",
+			"?search=pika":     "Search by name/ID",
+			"?page=2&limit=10": "Pagination",
+		},
+		"example_payload": map[string]interface{}{
+			"name":         "Pikachu",
+			"num":          "025",
+			"type":         []string{"Electric"},
+			"height":       "0.41 m",
+			"weight":       "6.0 kg",
+			"candy":        "Pikachu Candy",
+			"candy_count":  50,
+			"egg":          "2 km",
+			"spawn_chance": 0.21,
+			"avg_spawns":   21,
+			"spawn_time":   "04:00",
+			"weaknesses":   []string{"Ground"},
+		},
+	}
+
+	respondJSON(w, http.StatusOK, response)
+}
+
+// ==================== MAIN FUNCTION ====================
+func main() {
+	// রাউটিং সেটআপ
+	http.HandleFunc("/", enableCORS(homeHandler))
+
+	// Stats
+	http.HandleFunc("/api/stats", enableCORS(getStats))
+
+	// Main Pokémon endpoints
+	http.HandleFunc("/api/pokemons", enableCORS(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getAllPokemons(w, r)
+		case http.MethodPost:
+			createPokemon(w, r)
+		case http.MethodDelete:
+			deleteAllPokemons(w, r)
+		default:
+			respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+
+	// Bulk operations
+	http.HandleFunc("/api/pokemons/bulk", enableCORS(bulkCreatePokemons))
+
+	// Individual Pokémon operations
+	http.HandleFunc("/api/pokemons/", enableCORS(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/pokemons/")
+
+		// Check for special endpoints first
+		if strings.HasPrefix(path, "type/") {
+			getPokemonsByType(w, r)
+			return
+		}
+		if strings.HasPrefix(path, "weakness/") {
+			getPokemonsWeakAgainst(w, r)
+			return
+		}
+		if strings.HasPrefix(path, "search/") {
+			searchPokemons(w, r)
+			return
+		}
+
+		// Check if it's just "/api/pokemons/"
+		if path == "" {
+			switch r.Method {
+			case http.MethodGet:
+				getAllPokemons(w, r)
+			case http.MethodPost:
+				createPokemon(w, r)
+			default:
+				respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			}
+			return
+		}
+
+		// Regular ID-based operations
+		switch r.Method {
+		case http.MethodGet:
+			getPokemonByID(w, r)
+		case http.MethodPut:
+			updatePokemon(w, r)
+		case http.MethodPatch:
+			patchPokemon(w, r)
+		case http.MethodDelete:
+			deletePokemon(w, r)
+		default:
+			respondError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	}))
+
+	// Start server
+	port := ":8080"
+
+	fmt.Println("=====================================")
+	fmt.Printf("📡 Server URL: http://localhost%s\n", port)
+	fmt.Println("📚 API Documentation: http://localhost" + port)
+	fmt.Println("\n📋 Available Endpoints:")
+	fmt.Println("  GET    /                         - API Documentation")
+	fmt.Println("  GET    /api/stats                - Statistics")
+	fmt.Println("  GET    /api/pokemons             - Get all Pokémon")
+	fmt.Println("  POST   /api/pokemons             - Create new Pokémon")
+	fmt.Println("  GET    /api/pokemons/{id}        - Get Pokémon by ID")
+	fmt.Println("  PUT    /api/pokemons/{id}        - Update Pokémon (full)")
+	fmt.Println("  PATCH  /api/pokemons/{id}        - Update Pokémon (partial)")
+	fmt.Println("  DELETE /api/pokemons/{id}        - Delete Pokémon by ID")
+	fmt.Println("  POST   /api/pokemons/bulk        - Bulk create Pokémon")
+	fmt.Println("  DELETE /api/pokemons?confirm=true - Delete all Pokémon")
+	fmt.Println("  GET    /api/pokemons/type/{type} - Filter by type")
+	fmt.Println("  GET    /api/pokemons/search/{query} - Search Pokémon")
+	fmt.Println("\n⚡ Example curl commands saved to curl_examples.txt")
+
+	// Start server
+	log.Fatal(http.ListenAndServe(port, nil))
 }
